@@ -10,13 +10,20 @@ interface PayrollData {
   id: string;
   employeeName: string;
   encryptedSalary: string;
-  publicValue1: number;
-  publicValue2: number;
+  publicHours: number;
+  publicPerformance: number;
   description: string;
-  creator: string;
   timestamp: number;
-  isVerified: boolean;
-  decryptedValue: number;
+  creator: string;
+  isVerified?: boolean;
+  decryptedValue?: number;
+}
+
+interface PayrollStats {
+  totalPayments: number;
+  verifiedPayments: number;
+  avgPerformance: number;
+  totalHours: number;
 }
 
 const App: React.FC = () => {
@@ -31,15 +38,19 @@ const App: React.FC = () => {
     status: "pending", 
     message: "" 
   });
-  const [newPayrollData, setNewPayrollData] = useState({ employeeName: "", salary: "", department: "" });
+  const [newPayrollData, setNewPayrollData] = useState({ 
+    employeeName: "", 
+    salary: "", 
+    hours: "", 
+    performance: "" 
+  });
   const [selectedPayroll, setSelectedPayroll] = useState<PayrollData | null>(null);
-  const [decryptedSalary, setDecryptedSalary] = useState<number | null>(null);
-  const [isDecrypting, setIsDecrypting] = useState(false);
-  const [contractAddress, setContractAddress] = useState("");
-  const [fhevmInitializing, setFhevmInitializing] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 5;
+  const [operationHistory, setOperationHistory] = useState<string[]>([]);
+  const [contractAddress, setContractAddress] = useState("");
+  const [fhevmInitializing, setFhevmInitializing] = useState(false);
 
   const { status, initialize, isInitialized } = useFhevm();
   const { encrypt, isEncrypting } = useEncrypt();
@@ -88,6 +99,13 @@ const App: React.FC = () => {
     loadDataAndContract();
   }, [isConnected]);
 
+  const addToHistory = (operation: string) => {
+    setOperationHistory(prev => [
+      `${new Date().toLocaleTimeString()}: ${operation}`,
+      ...prev.slice(0, 9)
+    ]);
+  };
+
   const loadData = async () => {
     if (!isConnected) return;
     
@@ -106,11 +124,11 @@ const App: React.FC = () => {
             id: businessId,
             employeeName: businessData.name,
             encryptedSalary: businessId,
-            publicValue1: Number(businessData.publicValue1) || 0,
-            publicValue2: Number(businessData.publicValue2) || 0,
+            publicHours: Number(businessData.publicValue1) || 0,
+            publicPerformance: Number(businessData.publicValue2) || 0,
             description: businessData.description,
-            creator: businessData.creator,
             timestamp: Number(businessData.timestamp),
+            creator: businessData.creator,
             isVerified: businessData.isVerified,
             decryptedValue: Number(businessData.decryptedValue) || 0
           });
@@ -120,12 +138,29 @@ const App: React.FC = () => {
       }
       
       setPayrolls(payrollsList);
+      addToHistory(`Loaded ${payrollsList.length} payroll records`);
     } catch (e) {
       setTransactionStatus({ visible: true, status: "error", message: "Failed to load data" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
     } finally { 
       setIsRefreshing(false); 
     }
+  };
+
+  const testAvailability = async () => {
+    try {
+      const contract = await getContractReadOnly();
+      if (!contract) return;
+      
+      const isAvailable = await contract.isAvailable();
+      if (isAvailable) {
+        setTransactionStatus({ visible: true, status: "success", message: "Contract is available and ready" });
+        addToHistory("Checked contract availability - Ready");
+      }
+    } catch (e) {
+      setTransactionStatus({ visible: true, status: "error", message: "Availability check failed" });
+    }
+    setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
   };
 
   const createPayroll = async () => {
@@ -136,7 +171,7 @@ const App: React.FC = () => {
     }
     
     setCreatingPayroll(true);
-    setTransactionStatus({ visible: true, status: "pending", message: "Creating payroll with Zama FHE..." });
+    setTransactionStatus({ visible: true, status: "pending", message: "Creating encrypted payroll with Zama FHE..." });
     
     try {
       const contract = await getContractWithSigner();
@@ -152,30 +187,28 @@ const App: React.FC = () => {
         newPayrollData.employeeName,
         encryptedResult.encryptedData,
         encryptedResult.proof,
-        parseInt(newPayrollData.department) || 0,
-        0,
-        "Encrypted Payroll Entry"
+        parseInt(newPayrollData.hours) || 0,
+        parseInt(newPayrollData.performance) || 0,
+        "Encrypted Payroll Record"
       );
       
       setTransactionStatus({ visible: true, status: "pending", message: "Waiting for transaction confirmation..." });
       await tx.wait();
       
       setTransactionStatus({ visible: true, status: "success", message: "Payroll created successfully!" });
-      setTimeout(() => {
-        setTransactionStatus({ visible: false, status: "pending", message: "" });
-      }, 2000);
+      addToHistory(`Created payroll for ${newPayrollData.employeeName}`);
       
       await loadData();
       setShowCreateModal(false);
-      setNewPayrollData({ employeeName: "", salary: "", department: "" });
+      setNewPayrollData({ employeeName: "", salary: "", hours: "", performance: "" });
     } catch (e: any) {
       const errorMessage = e.message?.includes("user rejected transaction") 
         ? "Transaction rejected by user" 
         : "Submission failed: " + (e.message || "Unknown error");
       setTransactionStatus({ visible: true, status: "error", message: errorMessage });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
     } finally { 
       setCreatingPayroll(false); 
+      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
     }
   };
 
@@ -186,7 +219,6 @@ const App: React.FC = () => {
       return null; 
     }
     
-    setIsDecrypting(true);
     try {
       const contractRead = await getContractReadOnly();
       if (!contractRead) return null;
@@ -194,8 +226,8 @@ const App: React.FC = () => {
       const businessData = await contractRead.getBusinessData(businessId);
       if (businessData.isVerified) {
         const storedValue = Number(businessData.decryptedValue) || 0;
-        setTransactionStatus({ visible: true, status: "success", message: "Data already verified on-chain" });
-        setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
+        setTransactionStatus({ visible: true, status: "success", message: "Salary already verified on-chain" });
+        addToHistory(`Viewed verified salary for record ${businessId}`);
         return storedValue;
       }
       
@@ -216,42 +248,34 @@ const App: React.FC = () => {
       const clearValue = result.decryptionResult.clearValues[encryptedValueHandle];
       
       await loadData();
+      addToHistory(`Decrypted and verified salary for record ${businessId}`);
       
       setTransactionStatus({ visible: true, status: "success", message: "Salary decrypted and verified successfully!" });
-      setTimeout(() => {
-        setTransactionStatus({ visible: false, status: "pending", message: "" });
-      }, 2000);
-      
       return Number(clearValue);
       
     } catch (e: any) { 
       if (e.message?.includes("Data already verified")) {
-        setTransactionStatus({ visible: true, status: "success", message: "Data is already verified on-chain" });
-        setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
+        setTransactionStatus({ visible: true, status: "success", message: "Salary is already verified on-chain" });
         await loadData();
         return null;
       }
       
-      setTransactionStatus({ visible: true, status: "error", message: "Decryption failed: " + (e.message || "Unknown error") });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
+      setTransactionStatus({ status: "error", message: "Decryption failed: " + (e.message || "Unknown error"), visible: true });
       return null; 
-    } finally { 
-      setIsDecrypting(false); 
+    } finally {
+      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
     }
   };
 
-  const checkAvailability = async () => {
-    try {
-      const contract = await getContractReadOnly();
-      if (!contract) return;
-      
-      const isAvailable = await contract.isAvailable();
-      setTransactionStatus({ visible: true, status: "success", message: "Contract is available and working!" });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
-    } catch (e) {
-      setTransactionStatus({ visible: true, status: "error", message: "Availability check failed" });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
-    }
+  const getPayrollStats = (): PayrollStats => {
+    const totalPayments = payrolls.length;
+    const verifiedPayments = payrolls.filter(p => p.isVerified).length;
+    const avgPerformance = payrolls.length > 0 
+      ? payrolls.reduce((sum, p) => sum + p.publicPerformance, 0) / payrolls.length 
+      : 0;
+    const totalHours = payrolls.reduce((sum, p) => sum + p.publicHours, 0);
+
+    return { totalPayments, verifiedPayments, avgPerformance, totalHours };
   };
 
   const filteredPayrolls = payrolls.filter(payroll =>
@@ -259,79 +283,82 @@ const App: React.FC = () => {
     payroll.description.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const totalPages = Math.ceil(filteredPayrolls.length / itemsPerPage);
-  const currentPayrolls = filteredPayrolls.slice(
+  const paginatedPayrolls = filteredPayrolls.slice(
     (currentPage - 1) * itemsPerPage,
     currentPage * itemsPerPage
   );
 
-  const renderStats = () => {
-    const totalPayrolls = payrolls.length;
-    const verifiedPayrolls = payrolls.filter(p => p.isVerified).length;
-    const totalEncryptedAmount = payrolls.reduce((sum, p) => sum + (p.isVerified ? p.decryptedValue : 0), 0);
+  const totalPages = Math.ceil(filteredPayrolls.length / itemsPerPage);
 
+  const renderStatsDashboard = () => {
+    const stats = getPayrollStats();
+    
     return (
       <div className="stats-grid">
-        <div className="stat-card">
+        <div className="stat-card gold-card">
           <div className="stat-icon">💰</div>
           <div className="stat-content">
-            <h3>Total Payrolls</h3>
-            <div className="stat-value">{totalPayrolls}</div>
+            <h3>Total Payments</h3>
+            <div className="stat-value">{stats.totalPayments}</div>
+            <div className="stat-trend">Encrypted Records</div>
           </div>
         </div>
         
-        <div className="stat-card">
-          <div className="stat-icon">🔐</div>
+        <div className="stat-card silver-card">
+          <div className="stat-icon">✅</div>
           <div className="stat-content">
-            <h3>Verified Data</h3>
-            <div className="stat-value">{verifiedPayrolls}/{totalPayrolls}</div>
+            <h3>Verified</h3>
+            <div className="stat-value">{stats.verifiedPayments}/{stats.totalPayments}</div>
+            <div className="stat-trend">On-chain Verified</div>
           </div>
         </div>
         
-        <div className="stat-card">
-          <div className="stat-icon">⚡</div>
+        <div className="stat-card bronze-card">
+          <div className="stat-icon">📊</div>
           <div className="stat-content">
-            <h3>Total Encrypted</h3>
-            <div className="stat-value">${totalEncryptedAmount.toLocaleString()}</div>
+            <h3>Avg Performance</h3>
+            <div className="stat-value">{stats.avgPerformance.toFixed(1)}/10</div>
+            <div className="stat-trend">Public Data</div>
+          </div>
+        </div>
+        
+        <div className="stat-card copper-card">
+          <div className="stat-icon">⏱️</div>
+          <div className="stat-content">
+            <h3>Total Hours</h3>
+            <div className="stat-value">{stats.totalHours}</div>
+            <div className="stat-trend">Work Hours</div>
           </div>
         </div>
       </div>
     );
   };
 
-  const renderFHEProcess = () => {
+  const renderPerformanceChart = () => {
+    const performanceData = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    payrolls.forEach(p => {
+      if (p.publicPerformance >= 1 && p.publicPerformance <= 10) {
+        performanceData[p.publicPerformance - 1]++;
+      }
+    });
+
+    const maxCount = Math.max(...performanceData);
+
     return (
-      <div className="fhe-process">
-        <div className="process-step">
-          <div className="step-number">1</div>
-          <div className="step-content">
-            <h4>Salary Encryption</h4>
-            <p>Employee salaries encrypted with FHE technology</p>
-          </div>
-        </div>
-        <div className="process-arrow">→</div>
-        <div className="process-step">
-          <div className="step-number">2</div>
-          <div className="step-content">
-            <h4>On-chain Storage</h4>
-            <p>Encrypted data stored securely on blockchain</p>
-          </div>
-        </div>
-        <div className="process-arrow">→</div>
-        <div className="process-step">
-          <div className="step-number">3</div>
-          <div className="step-content">
-            <h4>Zero-Knowledge Proof</h4>
-            <p>Generate decryption proofs without revealing keys</p>
-          </div>
-        </div>
-        <div className="process-arrow">→</div>
-        <div className="process-step">
-          <div className="step-number">4</div>
-          <div className="step-content">
-            <h4>Verification</h4>
-            <p>On-chain validation of decryption proofs</p>
-          </div>
+      <div className="performance-chart">
+        <h3>Performance Distribution</h3>
+        <div className="chart-bars">
+          {performanceData.map((count, index) => (
+            <div key={index} className="chart-bar">
+              <div 
+                className="bar-fill"
+                style={{ height: maxCount ? `${(count / maxCount) * 100}%` : '0%' }}
+              >
+                <span className="bar-value">{count}</span>
+              </div>
+              <div className="bar-label">{index + 1}</div>
+            </div>
+          ))}
         </div>
       </div>
     );
@@ -340,31 +367,36 @@ const App: React.FC = () => {
   if (!isConnected) {
     return (
       <div className="app-container">
-        <header className="app-header">
-          <div className="logo-section">
-            <h1>FHE Payroll System</h1>
-            <p>Encrypted Salary Management</p>
+        <header className="app-header metal-header">
+          <div className="logo">
+            <h1>🔐 FHE Payroll System</h1>
+            <span>Encrypted Salary Management</span>
           </div>
-          <ConnectButton />
+          <div className="header-actions">
+            <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
+          </div>
         </header>
         
-        <div className="welcome-section">
-          <div className="welcome-content">
-            <div className="welcome-icon">🔐</div>
-            <h2>Secure Payroll Management</h2>
-            <p>FHE-powered encrypted salary system for DAOs</p>
+        <div className="connection-prompt metal-bg">
+          <div className="connection-content">
+            <div className="connection-icon">🔒</div>
+            <h2>Connect Your Wallet to Access Encrypted Payroll</h2>
+            <p>Secure, private salary management powered by Zama FHE encryption</p>
             <div className="feature-grid">
               <div className="feature-item">
                 <span>🔒</span>
-                <p>Fully Encrypted</p>
+                <h4>Encrypted Salaries</h4>
+                <p>Salary amounts fully encrypted on-chain</p>
               </div>
               <div className="feature-item">
-                <span>⚡</span>
-                <p>Instant Verification</p>
+                <span>👥</span>
+                <h4>DAO Privacy</h4>
+                <p>Protect employee privacy while ensuring transparency</p>
               </div>
               <div className="feature-item">
-                <span>🌐</span>
-                <p>DAO Compatible</p>
+                <span>📊</span>
+                <h4>Audit Ready</h4>
+                <p>Compliance-friendly verification system</p>
               </div>
             </div>
           </div>
@@ -375,229 +407,398 @@ const App: React.FC = () => {
 
   if (!isInitialized || fhevmInitializing) {
     return (
-      <div className="loading-container">
-        <div className="loading-spinner"></div>
-        <p>Initializing FHE System...</p>
+      <div className="loading-screen metal-bg">
+        <div className="fhe-spinner metal-spinner"></div>
+        <p>Initializing FHE Encryption System...</p>
+        <p className="loading-note">Securing payroll data with Zama FHE</p>
       </div>
     );
   }
 
+  if (loading) return (
+    <div className="loading-screen metal-bg">
+      <div className="fhe-spinner metal-spinner"></div>
+      <p>Loading encrypted payroll system...</p>
+    </div>
+  );
+
   return (
-    <div className="app-container">
-      <header className="app-header">
-        <div className="header-main">
-          <div className="logo-section">
-            <h1>FHE Payroll System</h1>
-            <span className="tag">Encrypted</span>
-          </div>
-          
-          <div className="header-actions">
-            <button onClick={checkAvailability} className="availability-btn">
-              Check Availability
-            </button>
-            <button onClick={() => setShowCreateModal(true)} className="create-btn">
-              + Add Payroll
-            </button>
-            <ConnectButton />
-          </div>
+    <div className="app-container metal-theme">
+      <header className="app-header metal-header">
+        <div className="logo">
+          <h1>🔐 FHE Payroll System</h1>
+          <span>Metal-Secure Salary Management</span>
+        </div>
+        
+        <div className="header-actions">
+          <button onClick={testAvailability} className="test-btn metal-btn">
+            Test Connection
+          </button>
+          <button 
+            onClick={() => setShowCreateModal(true)} 
+            className="create-btn metal-btn primary"
+          >
+            + New Payroll
+          </button>
+          <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
         </div>
       </header>
-
-      <main className="main-content">
-        <section className="dashboard-section">
-          <h2>Payroll Dashboard</h2>
-          {renderStats()}
+      
+      <div className="main-dashboard">
+        <div className="dashboard-section">
+          <h2>Payroll Overview</h2>
+          {renderStatsDashboard()}
           
-          <div className="fhe-info-panel">
-            <h3>FHE Encryption Process</h3>
-            {renderFHEProcess()}
+          <div className="charts-section">
+            <div className="chart-container metal-panel">
+              {renderPerformanceChart()}
+            </div>
           </div>
-        </section>
-
-        <section className="payroll-section">
+        </div>
+        
+        <div className="payrolls-section">
           <div className="section-header">
-            <h2>Employee Payrolls</h2>
-            <div className="controls">
+            <h2>Payroll Records</h2>
+            <div className="controls-row">
               <div className="search-box">
                 <input
                   type="text"
                   placeholder="Search employees..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
+                  className="search-input metal-input"
                 />
               </div>
-              <button onClick={loadData} disabled={isRefreshing} className="refresh-btn">
-                {isRefreshing ? "Refreshing..." : "Refresh"}
+              <button onClick={loadData} className="refresh-btn metal-btn" disabled={isRefreshing}>
+                {isRefreshing ? "🔄" : "Refresh"}
               </button>
             </div>
           </div>
-
-          <div className="payroll-list">
-            {currentPayrolls.length === 0 ? (
-              <div className="empty-state">
+          
+          <div className="payrolls-list">
+            {paginatedPayrolls.length === 0 ? (
+              <div className="no-records metal-panel">
                 <p>No payroll records found</p>
-                <button onClick={() => setShowCreateModal(true)} className="create-btn">
-                  Create First Payroll
+                <button className="create-btn metal-btn" onClick={() => setShowCreateModal(true)}>
+                  Create First Record
                 </button>
               </div>
-            ) : (
-              currentPayrolls.map((payroll, index) => (
-                <div key={index} className="payroll-item">
-                  <div className="payroll-info">
-                    <div className="employee-name">{payroll.employeeName}</div>
-                    <div className="payroll-meta">
-                      <span>Dept: {payroll.publicValue1}</span>
-                      <span>Date: {new Date(payroll.timestamp * 1000).toLocaleDateString()}</span>
-                    </div>
-                    <div className="salary-status">
-                      {payroll.isVerified ? (
-                        <span className="verified">Verified: ${payroll.decryptedValue}</span>
-                      ) : (
-                        <span className="encrypted">🔒 Encrypted</span>
-                      )}
-                    </div>
+            ) : paginatedPayrolls.map((payroll) => (
+              <div 
+                className={`payroll-item metal-panel ${payroll.isVerified ? "verified" : ""}`}
+                key={payroll.id}
+                onClick={() => setSelectedPayroll(payroll)}
+              >
+                <div className="payroll-header">
+                  <h3>{payroll.employeeName}</h3>
+                  <span className={`status-badge ${payroll.isVerified ? "verified" : "pending"}`}>
+                    {payroll.isVerified ? "✅ Verified" : "🔒 Encrypted"}
+                  </span>
+                </div>
+                <div className="payroll-details">
+                  <div className="detail-item">
+                    <span>Hours:</span>
+                    <strong>{payroll.publicHours}h</strong>
                   </div>
-                  <div className="payroll-actions">
-                    <button
-                      onClick={() => setSelectedPayroll(payroll)}
-                      className="view-btn"
-                    >
-                      View Details
-                    </button>
+                  <div className="detail-item">
+                    <span>Performance:</span>
+                    <strong>{payroll.publicPerformance}/10</strong>
+                  </div>
+                  <div className="detail-item">
+                    <span>Salary:</span>
+                    <strong>{payroll.isVerified ? `$${payroll.decryptedValue}` : "🔒 Encrypted"}</strong>
                   </div>
                 </div>
-              ))
-            )}
+                <div className="payroll-meta">
+                  <span>{new Date(payroll.timestamp * 1000).toLocaleDateString()}</span>
+                  <span>By: {payroll.creator.substring(0, 8)}...</span>
+                </div>
+              </div>
+            ))}
           </div>
-
+          
           {totalPages > 1 && (
             <div className="pagination">
-              <button
-                onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+              <button 
+                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
                 disabled={currentPage === 1}
+                className="pagination-btn metal-btn"
               >
                 Previous
               </button>
               <span>Page {currentPage} of {totalPages}</span>
-              <button
-                onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+              <button 
+                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
                 disabled={currentPage === totalPages}
+                className="pagination-btn metal-btn"
               >
                 Next
               </button>
             </div>
           )}
-        </section>
-      </main>
+        </div>
 
+        <div className="history-section">
+          <h3>Operation History</h3>
+          <div className="history-list metal-panel">
+            {operationHistory.length === 0 ? (
+              <p className="no-history">No operations yet</p>
+            ) : (
+              operationHistory.map((op, index) => (
+                <div key={index} className="history-item">
+                  {op}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+      
       {showCreateModal && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <div className="modal-header">
-              <h3>Add New Payroll</h3>
-              <button onClick={() => setShowCreateModal(false)}>×</button>
+        <CreatePayrollModal 
+          onSubmit={createPayroll} 
+          onClose={() => setShowCreateModal(false)} 
+          creating={creatingPayroll} 
+          payrollData={newPayrollData} 
+          setPayrollData={setNewPayrollData}
+          isEncrypting={isEncrypting}
+        />
+      )}
+      
+      {selectedPayroll && (
+        <PayrollDetailModal 
+          payroll={selectedPayroll} 
+          onClose={() => setSelectedPayroll(null)} 
+          decryptSalary={decryptSalary}
+          isDecrypting={fheIsDecrypting}
+        />
+      )}
+      
+      {transactionStatus.visible && (
+        <div className="transaction-modal">
+          <div className="transaction-content metal-panel">
+            <div className={`transaction-icon ${transactionStatus.status}`}>
+              {transactionStatus.status === "pending" && <div className="fhe-spinner metal-spinner"></div>}
+              {transactionStatus.status === "success" && "✓"}
+              {transactionStatus.status === "error" && "✗"}
             </div>
-            <div className="modal-body">
-              <div className="form-group">
-                <label>Employee Name</label>
-                <input
-                  type="text"
-                  value={newPayrollData.employeeName}
-                  onChange={(e) => setNewPayrollData({...newPayrollData, employeeName: e.target.value})}
-                  placeholder="Enter employee name"
-                />
-              </div>
-              <div className="form-group">
-                <label>Salary Amount (Integer)</label>
-                <input
-                  type="number"
-                  value={newPayrollData.salary}
-                  onChange={(e) => setNewPayrollData({...newPayrollData, salary: e.target.value})}
-                  placeholder="Enter salary amount"
-                />
-                <small>FHE Encrypted Integer</small>
-              </div>
-              <div className="form-group">
-                <label>Department Code</label>
-                <input
-                  type="number"
-                  value={newPayrollData.department}
-                  onChange={(e) => setNewPayrollData({...newPayrollData, department: e.target.value})}
-                  placeholder="Enter department code"
-                />
-                <small>Public Data</small>
-              </div>
-            </div>
-            <div className="modal-footer">
-              <button onClick={() => setShowCreateModal(false)}>Cancel</button>
-              <button
-                onClick={createPayroll}
-                disabled={creatingPayroll || isEncrypting}
-                className="primary"
-              >
-                {creatingPayroll ? "Creating..." : "Create Payroll"}
-              </button>
-            </div>
+            <div className="transaction-message">{transactionStatus.message}</div>
           </div>
         </div>
       )}
+    </div>
+  );
+};
 
-      {selectedPayroll && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <div className="modal-header">
-              <h3>Payroll Details</h3>
-              <button onClick={() => setSelectedPayroll(null)}>×</button>
+const CreatePayrollModal: React.FC<{
+  onSubmit: () => void; 
+  onClose: () => void; 
+  creating: boolean;
+  payrollData: any;
+  setPayrollData: (data: any) => void;
+  isEncrypting: boolean;
+}> = ({ onSubmit, onClose, creating, payrollData, setPayrollData, isEncrypting }) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    if (name === 'salary') {
+      const intValue = value.replace(/[^\d]/g, '');
+      setPayrollData({ ...payrollData, [name]: intValue });
+    } else {
+      setPayrollData({ ...payrollData, [name]: value });
+    }
+  };
+
+  return (
+    <div className="modal-overlay">
+      <div className="create-modal metal-panel">
+        <div className="modal-header">
+          <h2>Create Encrypted Payroll</h2>
+          <button onClick={onClose} className="close-modal metal-btn">&times;</button>
+        </div>
+        
+        <div className="modal-body">
+          <div className="fhe-notice metal-notice">
+            <strong>FHE 🔐 Salary Encryption</strong>
+            <p>Salary amount will be encrypted with Zama FHE (Integer only)</p>
+          </div>
+          
+          <div className="form-group">
+            <label>Employee Name *</label>
+            <input 
+              type="text" 
+              name="employeeName" 
+              value={payrollData.employeeName} 
+              onChange={handleChange} 
+              className="metal-input"
+              placeholder="Enter employee name..." 
+            />
+          </div>
+          
+          <div className="form-group">
+            <label>Salary Amount (Integer only) *</label>
+            <input 
+              type="number" 
+              name="salary" 
+              value={payrollData.salary} 
+              onChange={handleChange} 
+              className="metal-input"
+              placeholder="Enter salary amount..." 
+              step="1"
+              min="0"
+            />
+            <div className="data-type-label">🔐 FHE Encrypted</div>
+          </div>
+          
+          <div className="form-group">
+            <label>Work Hours *</label>
+            <input 
+              type="number" 
+              name="hours" 
+              value={payrollData.hours} 
+              onChange={handleChange} 
+              className="metal-input"
+              placeholder="Enter work hours..." 
+            />
+            <div className="data-type-label">Public Data</div>
+          </div>
+          
+          <div className="form-group">
+            <label>Performance Score (1-10) *</label>
+            <input 
+              type="number" 
+              min="1" 
+              max="10" 
+              name="performance" 
+              value={payrollData.performance} 
+              onChange={handleChange} 
+              className="metal-input"
+              placeholder="Enter performance score..." 
+            />
+            <div className="data-type-label">Public Data</div>
+          </div>
+        </div>
+        
+        <div className="modal-footer">
+          <button onClick={onClose} className="cancel-btn metal-btn">Cancel</button>
+          <button 
+            onClick={onSubmit} 
+            disabled={creating || isEncrypting || !payrollData.employeeName || !payrollData.salary || !payrollData.hours || !payrollData.performance} 
+            className="submit-btn metal-btn primary"
+          >
+            {creating || isEncrypting ? "Encrypting..." : "Create Payroll"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const PayrollDetailModal: React.FC<{
+  payroll: PayrollData;
+  onClose: () => void;
+  decryptSalary: (id: string) => Promise<number | null>;
+  isDecrypting: boolean;
+}> = ({ payroll, onClose, decryptSalary, isDecrypting }) => {
+  const [localDecrypted, setLocalDecrypted] = useState<number | null>(null);
+
+  const handleDecrypt = async () => {
+    if (payroll.isVerified) return;
+    
+    const decrypted = await decryptSalary(payroll.id);
+    if (decrypted !== null) {
+      setLocalDecrypted(decrypted);
+    }
+  };
+
+  return (
+    <div className="modal-overlay">
+      <div className="detail-modal metal-panel">
+        <div className="modal-header">
+          <h2>Payroll Details</h2>
+          <button onClick={onClose} className="close-modal metal-btn">&times;</button>
+        </div>
+        
+        <div className="modal-body">
+          <div className="payroll-info">
+            <div className="info-item">
+              <span>Employee:</span>
+              <strong>{payroll.employeeName}</strong>
             </div>
-            <div className="modal-body">
-              <div className="detail-item">
-                <label>Employee:</label>
-                <span>{selectedPayroll.employeeName}</span>
-              </div>
-              <div className="detail-item">
-                <label>Department:</label>
-                <span>{selectedPayroll.publicValue1}</span>
-              </div>
-              <div className="detail-item">
-                <label>Salary Status:</label>
-                <span className={selectedPayroll.isVerified ? "verified" : "encrypted"}>
-                  {selectedPayroll.isVerified ? `$${selectedPayroll.decryptedValue} (Verified)` : "🔒 Encrypted"}
-                </span>
-              </div>
-              <div className="detail-item">
-                <label>Created:</label>
-                <span>{new Date(selectedPayroll.timestamp * 1000).toLocaleString()}</span>
+            <div className="info-item">
+              <span>Creator:</span>
+              <strong>{payroll.creator.substring(0, 8)}...{payroll.creator.substring(38)}</strong>
+            </div>
+            <div className="info-item">
+              <span>Date:</span>
+              <strong>{new Date(payroll.timestamp * 1000).toLocaleDateString()}</strong>
+            </div>
+          </div>
+          
+          <div className="data-section">
+            <h3>Salary Information</h3>
+            
+            <div className="data-grid">
+              <div className="data-item public">
+                <span>Work Hours</span>
+                <strong>{payroll.publicHours}h</strong>
               </div>
               
-              <div className="decrypt-section">
-                <button
-                  onClick={async () => {
-                    const salary = await decryptSalary(selectedPayroll.id);
-                    if (salary !== null) {
-                      setDecryptedSalary(salary);
-                    }
-                  }}
-                  disabled={isDecrypting || selectedPayroll.isVerified}
-                  className="decrypt-btn"
-                >
-                  {isDecrypting ? "Decrypting..." : selectedPayroll.isVerified ? "Already Verified" : "Decrypt Salary"}
-                </button>
-                {decryptedSalary !== null && !selectedPayroll.isVerified && (
-                  <div className="decrypted-result">
-                    Decrypted Salary: ${decryptedSalary}
-                  </div>
-                )}
+              <div className="data-item public">
+                <span>Performance</span>
+                <strong>{payroll.publicPerformance}/10</strong>
+              </div>
+              
+              <div className={`data-item ${payroll.isVerified ? 'verified' : 'encrypted'}`}>
+                <span>Salary Amount</span>
+                <strong>
+                  {payroll.isVerified ? 
+                    `$${payroll.decryptedValue}` : 
+                    localDecrypted ? 
+                    `$${localDecrypted} (Decrypted)` : 
+                    "🔒 Encrypted"
+                  }
+                </strong>
+                {payroll.isVerified && <span className="verification-badge">✅ Verified</span>}
+                {localDecrypted && !payroll.isVerified && <span className="verification-badge">🔓 Local</span>}
+              </div>
+            </div>
+            
+            {!payroll.isVerified && (
+              <button 
+                className={`decrypt-btn metal-btn ${localDecrypted ? 'decrypted' : ''}`}
+                onClick={handleDecrypt} 
+                disabled={isDecrypting}
+              >
+                {isDecrypting ? "Decrypting..." : 
+                 localDecrypted ? "Re-verify" : 
+                 "🔓 Decrypt Salary"}
+              </button>
+            )}
+          </div>
+          
+          <div className="fhe-explanation">
+            <h4>FHE Encryption Process</h4>
+            <div className="process-steps">
+              <div className="step">
+                <span>1</span>
+                <p>Salary encrypted client-side using Zama FHE</p>
+              </div>
+              <div className="step">
+                <span>2</span>
+                <p>Encrypted data stored on-chain</p>
+              </div>
+              <div className="step">
+                <span>3</span>
+                <p>Authorized parties can decrypt with proof</p>
               </div>
             </div>
           </div>
         </div>
-      )}
-
-      {transactionStatus.visible && (
-        <div className={`toast ${transactionStatus.status}`}>
-          {transactionStatus.message}
+        
+        <div className="modal-footer">
+          <button onClick={onClose} className="close-btn metal-btn">Close</button>
         </div>
-      )}
+      </div>
     </div>
   );
 };
